@@ -1047,12 +1047,6 @@ function ResourceTrack({
 
   const safeMax = Math.max(1, max);
 
-  const segClick = (i) => {
-    // clicking segment i (0-based from left) sets value to that proportion
-    const newVal = Math.round(((i + 1) / SEGS) * safeMax);
-    onSetCur(clamp(newVal, 0, safeMax));
-  };
-
   const startEditCur = () => { setDraftCur(String(cur)); setEditingCur(true); setEditingMax(false); };
   const startEditMax = () => { if(!locked && showMaxCtrl){ setDraftMax(String(max)); setEditingMax(true); setEditingCur(false); } };
 
@@ -3240,7 +3234,7 @@ function ActiveTimerBar({timers,onUpdate,onRemove}){
             <div style={{display:"flex",gap:3,flexShrink:0}}>
               {t.type==="timer"&&!isExpired&&(
                 <button onClick={()=>onUpdate(timers.map(x=>x.id===t.id?{...x,paused:!x.paused}:x))}
-                  style={{background:"transparent",border:`1px solid ${urgentCol}44`,borderRadius:1,color:urgentCol,cursor:"pointer",fontSize:9,padding:"1px 5px",fontFamily:"'Cinzel',serif",fontSize:7}}>
+                  style={{background:"transparent",border:`1px solid ${urgentCol}44`,borderRadius:1,color:urgentCol,cursor:"pointer",padding:"1px 5px",fontFamily:"'Cinzel',serif",fontSize:7}}>
                   {t.paused?"▶":"⏸"}
                 </button>
               )}
@@ -4863,6 +4857,7 @@ function PlayerSheet({critNumber,dreadPool,onCharsChange,initialChars=[],activeT
   const[showRoll,setShowRoll]=useState(false);
   const[showDeath,setShowDeath]=useState(false);
   const[showArchive,setShowArchive]=useState(false);
+  const[showLevelUp,setShowLevelUp]=useState(false);
 
   useEffect(()=>{
     setChars(initialChars);
@@ -4989,8 +4984,6 @@ function PlayerSheet({critNumber,dreadPool,onCharsChange,initialChars=[],activeT
     }
     setShowDeath(false);
   };
-
-  const[showLevelUp,setShowLevelUp]=useState(false);
 
   const handleLevelUp=nl=>{
     const newLevel=clamp(nl,1,12);
