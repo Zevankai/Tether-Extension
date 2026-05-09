@@ -1,0 +1,15 @@
+{
+  "name": "Tether Extension",
+  "version": "1.0.0",
+  "manifest_version": 3,
+  "author": "Zevankai",
+  "description": "A Tether session tracker for Owlbear Rodeo.",
+  "icon": "/icon.svg",
+  "action": {
+    "title": "Tether Extension",
+    "icon": "/icon.svg",
+    "popover": "/index.html",
+    "height": 760,
+    "width": 1240
+  }
+}
