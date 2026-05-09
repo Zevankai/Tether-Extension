@@ -1,10 +1,14 @@
+import OBR from "@owlbear-rodeo/sdk";
 import { useState, useCallback, useRef, useEffect } from "react";
 
 /* ── fonts ── */
-const _fl = document.createElement("link");
-_fl.rel = "stylesheet";
-_fl.href = "https://fonts.googleapis.com/css2?family=Cinzel+Decorative:wght@400;700&family=Cinzel:wght@400;600&family=IM+Fell+English:ital@0;1&display=swap";
-document.head.appendChild(_fl);
+if (!document.querySelector('link[data-tether-fonts="true"]')) {
+  const _fl = document.createElement("link");
+  _fl.rel = "stylesheet";
+  _fl.href = "https://fonts.googleapis.com/css2?family=Cinzel+Decorative:wght@400;700&family=Cinzel:wght@400;600&family=IM+Fell+English:ital@0;1&display=swap";
+  _fl.dataset.tetherFonts = "true";
+  document.head.appendChild(_fl);
+}
 
 /* ══════════════════════════════════════════════════════════════════════════════
    HELPERS
@@ -18,6 +22,40 @@ const tetherLabel=v=>v===0?{text:"0 — Neutral",color:"var(--neutral)"}
   :{text:`${Math.abs(v)}D — Dread`,color:"var(--dread)"};
 const baselineLabel=v=>v===0?"Neutral":v>0?`${v}G`:`${Math.abs(v)}D`;
 let _uid=0; const uid=()=>`u${++_uid}`;
+const ROOM_STATE_KEY = "io.github.zevankai.tether-extension/state";
+const LOCAL_STATE_KEY = "tether-extension/local-state";
+const DEFAULT_EXTENSION_STATE = {
+  players: [],
+  gmCritNumber: null,
+  activeTimers: [],
+  gmDreadPool: 0,
+  dreadVisible: true,
+  playerChars: {},
+};
+
+const hasObrSdk = () => typeof OBR?.onReady === "function";
+const isObject = value => value !== null && typeof value === "object" && !Array.isArray(value);
+const normalizeExtensionState = raw => {
+  if (!isObject(raw)) return DEFAULT_EXTENSION_STATE;
+
+  const players = Array.isArray(raw.players)
+    ? raw.players.filter(player => isObject(player) && typeof player.id === "string" && typeof player.name === "string")
+    : DEFAULT_EXTENSION_STATE.players;
+  const playerChars = isObject(raw.playerChars)
+    ? Object.fromEntries(
+        Object.entries(raw.playerChars).map(([playerId, chars]) => [playerId, Array.isArray(chars) ? chars : []])
+      )
+    : DEFAULT_EXTENSION_STATE.playerChars;
+
+  return {
+    players,
+    gmCritNumber: Number.isInteger(raw.gmCritNumber) && raw.gmCritNumber >= 1 && raw.gmCritNumber <= 12 ? raw.gmCritNumber : null,
+    activeTimers: Array.isArray(raw.activeTimers) ? raw.activeTimers : DEFAULT_EXTENSION_STATE.activeTimers,
+    gmDreadPool: typeof raw.gmDreadPool === "number" ? clamp(Math.round(raw.gmDreadPool), 0, 12) : DEFAULT_EXTENSION_STATE.gmDreadPool,
+    dreadVisible: typeof raw.dreadVisible === "boolean" ? raw.dreadVisible : DEFAULT_EXTENSION_STATE.dreadVisible,
+    playerChars,
+  };
+};
 
 // Competency points granted per level-up
 const COMP_POINTS_PER_LEVEL = l => [3,6,9,12].includes(l) ? 3 : 1;
@@ -1008,12 +1046,6 @@ function ResourceTrack({
   const [draftMax, setDraftMax] = useState("");
 
   const safeMax = Math.max(1, max);
-
-  const segClick = (i) => {
-    // clicking segment i (0-based from left) sets value to that proportion
-    const newVal = Math.round(((i + 1) / SEGS) * safeMax);
-    onSetCur(clamp(newVal, 0, safeMax));
-  };
 
   const startEditCur = () => { setDraftCur(String(cur)); setEditingCur(true); setEditingMax(false); };
   const startEditMax = () => { if(!locked && showMaxCtrl){ setDraftMax(String(max)); setEditingMax(true); setEditingCur(false); } };
@@ -3202,7 +3234,7 @@ function ActiveTimerBar({timers,onUpdate,onRemove}){
             <div style={{display:"flex",gap:3,flexShrink:0}}>
               {t.type==="timer"&&!isExpired&&(
                 <button onClick={()=>onUpdate(timers.map(x=>x.id===t.id?{...x,paused:!x.paused}:x))}
-                  style={{background:"transparent",border:`1px solid ${urgentCol}44`,borderRadius:1,color:urgentCol,cursor:"pointer",fontSize:9,padding:"1px 5px",fontFamily:"'Cinzel',serif",fontSize:7}}>
+                  style={{background:"transparent",border:`1px solid ${urgentCol}44`,borderRadius:1,color:urgentCol,cursor:"pointer",padding:"1px 5px",fontFamily:"'Cinzel',serif",fontSize:7}}>
                   {t.paused?"▶":"⏸"}
                 </button>
               )}
@@ -4825,6 +4857,12 @@ function PlayerSheet({critNumber,dreadPool,onCharsChange,initialChars=[],activeT
   const[showRoll,setShowRoll]=useState(false);
   const[showDeath,setShowDeath]=useState(false);
   const[showArchive,setShowArchive]=useState(false);
+  const[showLevelUp,setShowLevelUp]=useState(false);
+
+  useEffect(()=>{
+    setChars(initialChars);
+    setActiveId(current=>initialChars.some(char=>char.id===current)?current:(initialChars[0]?.id??null));
+  },[initialChars]);
 
   const activeChar=chars.find(x=>x.id===activeId)??null;
 
@@ -4946,8 +4984,6 @@ function PlayerSheet({critNumber,dreadPool,onCharsChange,initialChars=[],activeT
     }
     setShowDeath(false);
   };
-
-  const[showLevelUp,setShowLevelUp]=useState(false);
 
   const handleLevelUp=nl=>{
     const newLevel=clamp(nl,1,12);
@@ -5341,42 +5377,113 @@ function AddPlayerModal({onAdd,onClose}){
    ROOT APP
 ══════════════════════════════════════════════════════════════════════════════ */
 export default function App(){
-  const _defaultPlayerId=useRef(uid()).current;
-  const _aldric=useRef(makePremadeChar()).current;
-  const _vaelindra=useRef(makePremadeSpellcaster()).current;
-
-  const[players,setPlayers]=useState([{id:_defaultPlayerId,name:"Kyle"}]);
-  const[activeTab,setActiveTab]=useState(_defaultPlayerId);
+  const[sharedState,setSharedState]=useState(DEFAULT_EXTENSION_STATE);
+  const[activeTab,setActiveTab]=useState("gm");
   const[showAdd,setShowAdd]=useState(false);
+  const[isReady,setIsReady]=useState(false);
+  const[isGM,setIsGM]=useState(true);
+  const lastSavedStateRef=useRef(JSON.stringify(DEFAULT_EXTENSION_STATE));
 
-  // Shared GM state
-  const[gmCritNumber,setGmCritNumber]=useState(null);
-  // Global spell timers (up to 3)
-  const[activeTimers,setActiveTimers]=useState([]);
-  const addTimer=t=>setActiveTimers(prev=>prev.length>=3?prev:[...prev,t]);
-  const updateTimers=ts=>setActiveTimers(ts);
-  const removeTimer=id=>setActiveTimers(prev=>prev.filter(t=>t.id!==id));
-  const[gmDreadPool,setGmDreadPool]=useState(0);
-  const[dreadVisible,setDreadVisible]=useState(true);
+  const setExtensionState=updater=>{
+    setSharedState(prev=>normalizeExtensionState(typeof updater==="function"?updater(prev):updater));
+  };
 
-  // Chars lifted from each player sheet: { [playerId]: char[] }
-  const[playerChars,setPlayerChars]=useState({[_defaultPlayerId]:[_aldric,_vaelindra]});
+  useEffect(()=>{
+    let mounted=true;
+    let unsubscribe=()=>{};
+
+    const applyLoadedState=rawState=>{
+      const nextState=normalizeExtensionState(rawState);
+      lastSavedStateRef.current=JSON.stringify(nextState);
+      if(mounted) setSharedState(nextState);
+    };
+
+    if(hasObrSdk()){
+      OBR.onReady(async()=>{
+        const role=await OBR.player.getRole();
+        if(!mounted) return;
+        setIsGM(role==="GM");
+        const metadata=await OBR.room.getMetadata();
+        if(!mounted) return;
+        applyLoadedState(metadata[ROOM_STATE_KEY]);
+        setIsReady(true);
+        unsubscribe=OBR.room.onMetadataChange(metadata=>{
+          applyLoadedState(metadata[ROOM_STATE_KEY]);
+        });
+      });
+    }else{
+      try{
+        applyLoadedState(JSON.parse(localStorage.getItem(LOCAL_STATE_KEY)??"null"));
+      }catch{
+        applyLoadedState(DEFAULT_EXTENSION_STATE);
+      }
+      setIsReady(true);
+    }
+
+    return()=>{
+      mounted=false;
+      unsubscribe();
+    };
+  },[]);
+
+  useEffect(()=>{
+    if(!isReady) return;
+    const serialized=JSON.stringify(sharedState);
+    if(serialized===lastSavedStateRef.current) return;
+    lastSavedStateRef.current=serialized;
+
+    if(hasObrSdk()){
+      void OBR.room.setMetadata({[ROOM_STATE_KEY]:sharedState});
+    }else{
+      localStorage.setItem(LOCAL_STATE_KEY, serialized);
+    }
+  },[isReady,sharedState]);
+
+  const { players, gmCritNumber, activeTimers, gmDreadPool, dreadVisible, playerChars } = sharedState;
+  const visibleTab=activeTab==="gm"&&!isGM?(players[0]?.id??null):activeTab;
+
+  useEffect(()=>{
+    if(visibleTab==="gm"&&isGM) return;
+    if(visibleTab!==null&&visibleTab!=="gm"&&players.some(player=>player.id===visibleTab)) return;
+    if(isGM){
+      setActiveTab("gm");
+    }else if(players.length>0){
+      setActiveTab(players[0].id);
+    }
+  },[isGM,players,visibleTab]);
+
+  const addTimer=t=>setExtensionState(prev=>({
+    ...prev,
+    activeTimers: prev.activeTimers.length>=3?prev.activeTimers:[...prev.activeTimers,t],
+  }));
+  const updateTimers=ts=>setExtensionState(prev=>({...prev,activeTimers:ts}));
+  const removeTimer=id=>setExtensionState(prev=>({...prev,activeTimers:prev.activeTimers.filter(t=>t.id!==id)}));
 
   const handleCharsChange=(playerId,chars)=>{
-    setPlayerChars(prev=>({...prev,[playerId]:chars}));
+    setExtensionState(prev=>({...prev,playerChars:{...prev.playerChars,[playerId]:chars}}));
   };
 
   const addPlayer=name=>{
     const id=uid();
-    setPlayers(p=>[...p,{id,name}]);
-    setPlayerChars(prev=>({...prev,[id]:[]}));
+    setExtensionState(prev=>({
+      ...prev,
+      players:[...prev.players,{id,name}],
+      playerChars:{...prev.playerChars,[id]:[]},
+    }));
     setActiveTab(id);
     setShowAdd(false);
   };
   const removePlayer=id=>{
-    setPlayers(p=>p.filter(pl=>pl.id!==id));
-    setPlayerChars(prev=>{const n={...prev};delete n[id];return n;});
-    if(activeTab===id)setActiveTab("gm");
+    setExtensionState(prev=>{
+      const nextChars={...prev.playerChars};
+      delete nextChars[id];
+      return{
+        ...prev,
+        players:prev.players.filter(pl=>pl.id!==id),
+        playerChars:nextChars,
+      };
+    });
+    if(activeTab===id)setActiveTab(isGM?"gm":null);
   };
 
   // All active chars for GM milestone
@@ -5385,9 +5492,9 @@ export default function App(){
   // Apply milestone result directly to lifted char state
   const handleMilestone=result=>{
     if(!result)return;
-    setPlayerChars(prev=>{
+    setExtensionState(prev=>{
       const next={};
-      Object.entries(prev).forEach(([pid,chars])=>{
+      Object.entries(prev.playerChars).forEach(([pid,chars])=>{
         next[pid]=chars.map(c=>{
           if(!result.chars.includes(c.id))return c;
           const sign=result.direction==="grant"?1:-1;
@@ -5402,9 +5509,26 @@ export default function App(){
           return{...c,competencies:newComps};
         });
       });
-      return next;
+      return {...prev,playerChars:next};
     });
   };
+
+  const setGmCritNumber=value=>setExtensionState(prev=>({...prev,gmCritNumber:typeof value==="function"?value(prev.gmCritNumber):value}));
+  const setGmDreadPool=value=>setExtensionState(prev=>({...prev,gmDreadPool:typeof value==="function"?value(prev.gmDreadPool):value}));
+  const setDreadVisible=value=>setExtensionState(prev=>({...prev,dreadVisible:typeof value==="function"?value(prev.dreadVisible):value}));
+
+  if(!isReady){
+    return(
+      <>
+        <style>{CSS}</style>
+        <div className="app">
+          <div className="panel" style={{textAlign:"center",padding:"32px 20px",color:"var(--text-dim)",fontStyle:"italic"}}>
+            Loading Tether…
+          </div>
+        </div>
+      </>
+    );
+  }
 
   return(
     <>
@@ -5417,9 +5541,9 @@ export default function App(){
 
         <ActiveTimerBar timers={activeTimers} onUpdate={updateTimers} onRemove={removeTimer}/>
         <div className="ptabs-wrap">
-          <button className={`ptab${activeTab==="gm"?" on":""}`} onClick={()=>setActiveTab("gm")}>⚔ GM</button>
+          {isGM&&<button className={`ptab${visibleTab==="gm"?" on":""}`} onClick={()=>setActiveTab("gm")}>⚔ GM</button>}
           {players.map(pl=>(
-            <button key={pl.id} className={`ptab${activeTab===pl.id?" on":""}`} onClick={()=>setActiveTab(pl.id)}>
+            <button key={pl.id} className={`ptab${visibleTab===pl.id?" on":""}`} onClick={()=>setActiveTab(pl.id)}>
               {pl.name}
               <span className="ptab-x" onClick={e=>{e.stopPropagation();if(confirm(`Remove ${pl.name}'s tab?`))removePlayer(pl.id);}}>✕</span>
             </button>
@@ -5427,7 +5551,7 @@ export default function App(){
           <button className="add-player-btn" onClick={()=>setShowAdd(true)}>+ Add Player</button>
         </div>
 
-        {activeTab==="gm"&&<GmTab
+        {visibleTab==="gm"&&isGM&&<GmTab
           allChars={allActiveChars}
           onMilestone={handleMilestone}
           critNumber={gmCritNumber} setCritNumber={setGmCritNumber}
@@ -5435,7 +5559,7 @@ export default function App(){
           dreadVisible={dreadVisible} setDreadVisible={setDreadVisible}
         />}
         {players.map(pl=>(
-          <div key={pl.id} style={{display:activeTab===pl.id?"block":"none"}}>
+          <div key={pl.id} style={{display:visibleTab===pl.id?"block":"none"}}>
             <PlayerSheet
               critNumber={gmCritNumber}
               dreadPool={dreadVisible?gmDreadPool:null}
@@ -5447,9 +5571,14 @@ export default function App(){
           </div>
         ))}
 
-        {players.length===0&&activeTab==="gm"&&(
+        {players.length===0&&visibleTab==="gm"&&(
           <div style={{textAlign:"center",marginTop:24,color:"var(--text-dim)",fontSize:11,fontStyle:"italic"}}>
             Click <b style={{color:"var(--gold-dim)"}}>+ Add Player</b> to create player tabs.
+          </div>
+        )}
+        {players.length===0&&visibleTab===null&&(
+          <div style={{textAlign:"center",marginTop:24,color:"var(--text-dim)",fontSize:11,fontStyle:"italic"}}>
+            Ask the GM to create a player tab to begin tracking.
           </div>
         )}
 
